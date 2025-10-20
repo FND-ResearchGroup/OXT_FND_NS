@@ -1,11 +1,11 @@
 # HEP in FND
 
- date: 		17 September 2025
+ date: 		20 October 2025
  author: 	Natascha Stoffel, natascha.stoffel@unifr.ch
  
-This git hub repository entails the data, scripts and output for the project "Increased salivary Oxytocin correlates with lower self-reported Interoceptive Accuracy in Functional Neurological Disorders" - Stoffel et al., under review at Neurobiology of Stress
+This git hub repository entails the data, scripts and output for the project "Increased salivary Oxytocin correlates with lower self-reported Interoceptive Accuracy in Functional Neurological Disorders" - Stoffel et al., 2025, published in the Neurobiology of Stress: https://doi.org/10.1016/j.ynstr.2025.100765 
 
-This repository will be structured as follows (please note that the data and code will be made available once the manuscript is published)
+This repository will be structured as follows
 
 
 #### Code :		
@@ -20,8 +20,6 @@ This repository will be structured as follows (please note that the data and cod
 
 
 
-#### Publication :	
-link to the publication derived from these data and analysis
 
 
 
