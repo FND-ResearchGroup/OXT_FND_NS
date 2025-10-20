@@ -9,7 +9,7 @@ This repository will be structured as follows
 
 
 #### Code :		
--  R analysis markdown :  R script (quarto document/html file)
+-  R analysis markdown :  R script (quarto document and html file)
 -  output : output generated via Rscript
 
 
@@ -17,6 +17,9 @@ This repository will be structured as follows
 #### Data :		
 -  Data Dictionary
 -  excel file with CRF data from those people who gave consent on further use of the data
+- excel file with salivary Oxytocin data from those people who gave consent on further use of the data
+- note on the definition of phases for menstrual cycle (for those with a regular, natural cycle)
+
 
 
 
