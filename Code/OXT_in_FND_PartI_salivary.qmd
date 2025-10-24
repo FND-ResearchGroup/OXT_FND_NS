@@ -1,0 +1,1698 @@
+---
+title: "OXT in Interoception - Part I"
+author: "Natascha Stoffel"
+date: "`r date()`"
+format:
+  html:
+    embed-resources: true
+    toc: true #to show table of contents
+editor: visual
+---
+
+# Information on the Data
+
+BASEC registration number : 2023-0469
+
+Study Visit "Interoception" conducted between **18.10.2023 - 4.9.2024**, with completed N=92 participants.
+
+In this analysis we will be looking at the RedCap data that is downloaded from the redcapmed.unifr.ch server, with project number PID 121, named "Interoception" in correlation with the Oxytocin Saliva Samples that were taken at specific time points.
+
+# 0) Preparation
+
+```{r}
+
+#| warning: FALSE
+#| error: FALSE
+#| output: FALSE
+
+
+## SALIVA 
+#
+# Analysis of participants 
+# Natascha Stoffel 
+
+# Load libraries
+library(readr)      # For read_csv()
+library(dplyr)      # For data manipulation functions
+library(gtsummary)  # For tbl_summary()
+library(gt)         # For working with gt tables
+library(ggplot2)    # For plotting
+library(ggpubr)     # For ggboxplot() and adding jitter
+library(ggsignif)   # For statistical comparisons in plots
+library(gridExtra)  # For arranging multiple plots in a grid
+library(openxlsx)   # For saving Excel files
+library(tidyr)      # For reshaping data
+library(plyr)       # For revalue() function
+library(pracma)     # For AUC functions
+library(lme4)       # For linear mixed models
+library(lmerTest)   # For linear mixed models
+library(pracma)     # for trapz()
+library(emmeans)    # for interaction posthoc
+library(writexl)    # for writing excel tables
+
+
+# remove everything that we stored in the environment
+rm(list=ls()) 
+
+####  DATA -----------------------------------------------------------
+# load prepared and cleaned file from 00_preparation: df_yyyymmdd.csv
+setwd("/Users/nataschastoffel/Documents/GitHub/OXT_FND_NS/output")
+
+df_CRF <- read.xlsx("/Users/nataschastoffel/Documents/GitHub/interoception_NS/data/processed/12-2024/Data.CRF_FINAL_20241218.xlsx")
+df_CRF <- df_CRF[complete.cases(df_CRF$pcode, df_CRF$saliva_waking), ]  # to delete any data without pcode (in case some additional rows were added)
+
+df_CRF <- df_CRF %>% dplyr::filter(!pcode %in% c(2, 9)) # not enough saliva to measure any OXT measuremant
+
+# upload the Oxytocin Data
+df_OT_long_FULL <- readxl::read_excel("~/Documents/GitHub/interoception_NS/data/raw/04-2025/Oxytocin.xlsx")
+df_OT_long_FULL$Oxytocin <- as.numeric(df_OT_long_FULL$Oxytocin) # everything without a variable stored to 
+
+df_OT_long_FULL$pcode <- sub("^P00", "", df_OT_long_FULL$pcode) # gets rid of the P00 for all participants
+df_OT_long_FULL$pcode <- sub("^P0", "", df_OT_long_FULL$pcode) # gets rid of the P0 for all participants
+df_OT_long_FULL$pcode <- sub("^P", "", df_OT_long_FULL$pcode) # gets rid of the P for all participants
+df_OT_long_FULL <- df_OT_long_FULL %>% filter(!pcode %in% c(2, 9)) # no data
+df_OT_long_FULL <- df_OT_long_FULL %>% filter(!pcode %in% c(998, 996, 995, 994, 993, 992)) # pilots
+
+# Making timepoint a factor
+df_OT_long_FULL$timepoint <- factor(df_OT_long_FULL$timepoint, levels = c("waking", "lunch", "pretask", "posttask"))
+
+# Reshape data from long to wide format
+df_OT_wide <- df_OT_long_FULL %>%
+  pivot_wider(names_from = timepoint, values_from = Oxytocin, names_prefix = "Oxytocin_")
+
+df_FULL<-merge(df_OT_wide, df_CRF, by = "pcode") 
+
+# drop one variable group (as both datasets hat variable group)
+df_FULL <- df_FULL |>
+  dplyr::select(-group.y) |>
+  dplyr::rename(group = group.x)
+
+####  VARIABLES -----------------------------------------------------------
+
+# sum score for depression and anxiety for their correlation r = 0.78, p < 2.2e-16
+cor.test(df_FULL$stai_t, df_FULL$bdi) 
+df_FULL <- df_FULL %>%
+  mutate(anx_dep_SUM = stai_t + bdi)#
+
+
+df_FULL <- df_FULL %>%
+  mutate(ovulation_phase = ifelse(mc_phase == 2, 1, 0)) # if ovulation phase; 1, if not 0
+
+# Flag High to reduce the number of factors (Engel, et al 2019: highest OXT for ovulation phase / Stock et al 1989: higher for hormonal contraception)
+df_FULL <- df_FULL %>%
+  mutate(OXT_flag_high = case_when(
+            menopause == 1 ~ 0,    # Menopausal participants always get 0
+      contraception == 1 ~ 1, # when contraception =1 
+      mc_phase == 2 ~ 1, # when mc phase = 2 (ovulation)
+      TRUE ~ 0  )) # everyone else, including NAs, gets 0
+
+ # flags contraceptive intake AND ovulation phase
+df_FULL <- df_FULL %>%
+  mutate(OXT_flag_high_v2 = case_when(
+        menopause == 1 ~ 0,    # Menopausal participants always get 0
+      contraception == 1 ~ 1, # when contraception =1 
+     mc_phase %in% c(1, 2) ~ 1, # when mc phase = 1 (follisular) OR 2 (ovulation)
+      TRUE ~ 0  )) # everyone else, including NAs, gets 0
+
+
+# Sexual Functioning for both sexes (comparable)
+summary(df_FULL$fsfi_total_adj) # range min-max: 2-36
+summary(df_FULL$msfi_total_adj)  # range min-max: 2-30
+
+df_FULL <- df_FULL %>%
+  mutate( msfi_scaled = ((msfi_total_adj - 2) / (30 - 2)) * (36 - 2) + 2,  # Rescale MSFI to 2-36
+    sex_func = ifelse(!is.na(fsfi_total_adj), fsfi_total_adj, msfi_scaled)  # Use FSFI if available, or take the resacaled msfi to write a new variable called sex_func that is now comparable between the sexes
+)
+
+summary(df_FULL$sex_func) # range min-max: 2-36
+as.numeric(df_FULL$sex_func)
+
+
+# Value for Insecure Attachment (sum of avoidant and anxious)
+df_FULL <- df_FULL %>%
+  mutate(insec_attach = ecr_anx_adj + ecr_av_adj)#
+
+
+# mean Oxytocin score for the four time intervals
+df_FULL$Oxytocin <- rowMeans(df_FULL[, c("Oxytocin_waking", "Oxytocin_lunch", "Oxytocin_pretask", "Oxytocin_posttask")], na.rm = TRUE)
+
+  ### to see for what participant how many timepoitns are missing
+  df_FULL$missing_count <- rowSums(is.na(df_FULL[, c("Oxytocin_waking", 
+                                                    "Oxytocin_lunch", 
+                                                    "Oxytocin_pretask", 
+                                                    "Oxytocin_posttask")]))
+  # Create a summary table
+  per_participant <- df_FULL %>%
+  dplyr::transmute( pcode,   missing_count = rowSums(is.na(dplyr::pick(Oxytocin_waking, Oxytocin_lunch, Oxytocin_pretask, Oxytocin_posttask))) )
+
+  # show those that have at least one missing
+  participants_with_missing <- per_participant %>%
+  dplyr::filter(missing_count > 0)
+  participants_with_missing
+  # 5 participant have ONE timepoint missing each
+
+
+# Area under the Curve for Oxytocin using the four time intervals (if complete)
+df_FULL <- df_FULL |> rowwise() |>  dplyr::mutate(
+    AUC_Oxytocin = ifelse(
+      all(!is.na(c_across(c(Oxytocin_waking, Oxytocin_lunch, Oxytocin_pretask, Oxytocin_posttask)))),
+      trapz( x = c(1, 2, 3, 4),
+        y = c_across(c(Oxytocin_waking, Oxytocin_lunch, Oxytocin_pretask, Oxytocin_posttask)) ), NA_real_ ) ) |>
+  ungroup()
+
+df_FULL %>%
+  filter(is.na(AUC_Oxytocin)) %>%
+  select(pcode, sex, group) # showing sex and group allocation of the discarded N = 5 due to missing values
+
+####  EXCLUSIONS / SUBGROUPS -----------------------------------------------------------
+
+# potential EXCLUSION
+# P007: 1a at wake up, 1b 30min after wake up, 2a and 2b also 30min apart and without eating lunch before
+# P014: 1a&1b taken 90min after waking up
+# P017: 1a/1b done via passive drooling : NOT ENOUGH SALIVA
+# P032: 2a/2b was done 45min post lunch
+# P047: 3a/2b missing: NOT ENOUGH SALIVA
+# P061: 1a/b and 2a/b were done the day after the study and then were sitting 3 days at the post (not cooled) before centrifugation
+# P066: 1a/b and 2a/b were POOLED to have enough saliva --> value was written to both timepoints
+# P071: 1a/1b were done the day after the study visit and stayed in the fridge and then were sent via post
+# P072: 4a/4b missing as we had to quit the study visit early
+# P074: 1a/1b done correctly but forgotten at home; thus stayed in the fridge and followingly sent via post
+# P081: 3a/b missing: NOT ENOUGH SALIVA
+# P085: 2a/2b were done 50min post lunch
+# P090: 1a/b and 2a/b were POOLED to have enough saliva --> value was written to both timepoints
+
+# create subsamples for complete adherence to protocol
+df_adherence <- df_FULL %>% filter(!pcode %in% c(7, 14, 17, 47, 61, 66, 71, 72, 74, 81, 90)) # only include those who have adherence to protocol
+df_OT_long_adherence <- df_OT_long_FULL %>% filter(!pcode %in% c(7, 14, 17, 47, 61, 66, 71, 72, 74, 81, 90)) # only include those who have adherence to protocol
+
+# create sample by the exclusion of the statistical outliers that are identified in the FULL population
+# identifies outlier using Interquartile Range (IQR) method
+# below 25% Quartile - 1.5*IQR
+# above 75 % Quartile + 1.5*IQR
+df_FULL %>% 
+  group_by(group) %>%
+  rstatix::identify_outliers(Oxytocin) 
+# P010 (HC), P074 (HC) and P049 (FND) are considered an outlier --> removed for the analysis
+
+df_FULL %>% 
+  group_by(group) %>%
+  rstatix::identify_outliers(AUC_Oxytocin) 
+# P010 (HC), P074 (HC) and P049 (FND) are considered an outlier also in AUC --> removed for the analysis
+
+df <- df_FULL %>% filter(!pcode %in% c(10, 49, 74)) # only include those who are NOT considered outliers
+df_OT_long <- df_OT_long_FULL %>% filter(!pcode %in% c(10, 49, 74)) # only include those who have adherence to protocol
+
+write_xlsx(df_FULL, "/Users/nataschastoffel/Documents/GitHub/interoception_NS/data/processed/08-2025/df_FULL.xlsx")
+
+
+df_female <- df[df$sex == "1", ]
+df_male <- df[df$sex == "2", ]
+
+df_FND <- df[df$group == "1", ]
+df_HC <- df[df$group == "0", ]
+
+#### Functions
+
+calculate_cohens_d <- function(data, variable, group_var, group1, group2) {
+  # Subset the data for each group
+  group1_data <- data[[variable]][data[[group_var]] == group1]
+  group2_data <- data[[variable]][data[[group_var]] == group2]
+  
+  # Calculate means and standard deviations
+  mean1 <- mean(group1_data, na.rm = TRUE)
+  mean2 <- mean(group2_data, na.rm = TRUE)
+  sd1 <- sd(group1_data, na.rm = TRUE)
+  sd2 <- sd(group2_data, na.rm = TRUE)
+  
+  # Calculate sample sizes
+  n1 <- sum(!is.na(group1_data))
+  n2 <- sum(!is.na(group2_data))
+  
+  # Calculate pooled standard deviation
+  sd_pooled <- sqrt(((n1 - 1) * sd1^2 + (n2 - 1) * sd2^2) / (n1 + n2 - 2))
+  
+  # Calculate Cohen's d
+  cohens_d <- (mean1 - mean2) / sd_pooled
+  
+  # Return Cohen's d
+  return(cohens_d)
+}
+
+```
+
+# 1) Overview on Population
+
+```{r}
+#| warning: FALSE
+#| error: FALSE
+### Summary Table for the final sample ---------------------------------------------
+
+# AGE
+shapiro.test(df$age) #  normally distributed with  p < 0.05
+res<-t.test(df$age[df$group=="1"], df$age[df$group=="0"])
+res # 
+mean(df_FND$age)
+sd(df_FND$age)
+mean(df_HC$age)
+sd(df_HC$age)
+
+# SEX
+table_sex_group <- table(df$sex, df$group)
+table_sex_group 
+# Perform the chi-squared test
+res <- chisq.test(table_sex_group)
+res # X-squared = 5.5335e-31, df = 1, p-value = 1
+
+
+df_tbl <- df %>%
+  mutate(sex = factor(sex, levels = c("1", "2"), labels = c("female", "male"))) %>%
+  mutate(group = factor(group, levels = c("0", "1"), labels = c("HC", "FND")))  %>%
+  mutate(psychotropic_medication = factor(psychotropic_medication, levels = c("0", "1"), labels = c("no", "yes, intake of psychotropic medication")))
+
+
+# Table 1 for Demographics
+Data.t <- select(df_tbl, c("group", "sex", "age", "psychotropic_medication", "bdi", "stai_s", "stai_t", "sdq", "ias", "maia_total", "insec_attach", "ecr_anx_adj", "ecr_av_adj", "ctq_total", "sex_func"))
+
+# Create the table summary
+tbl1 <- Data.t %>%
+  tbl_summary(
+    by = group, # Grouping by 'group'
+    missing = "no",
+    statistic = list(
+      age = "{mean} ({sd})", 
+      sex = "{n} ({p})", 
+      psychotropic_medication ="{n} ({p})", 
+      bdi = "{median} ({IQR})",
+      stai_s = "{median} ({IQR})", 
+      stai_t = "{mean} ({sd})",
+      sdq = "{median} ({IQR})",
+      maia_total ="{mean} ({sd})",
+      ias = "{median} ({IQR})",
+      insec_attach = "{median} ({IQR})",
+      ecr_anx_adj = "{median} ({IQR})",
+      ecr_av_adj = "{median} ({IQR})",
+      ctq_total = "{median} ({IQR})",
+      sex_func = "{median} ({IQR})"
+    ),
+    digits = list(age = 1, sex = 1, psychotropic_medication = 1, bdi = 1, stai_s = 1, stai_t = 1, sdq = 1, maia_total = 1, ias = 1, ctq_total = 1, ecr_anx_adj = 1, ecr_av_adj = 1, insec_attach = 1, ctq_total = 1, sex_func = 1),
+    label = list(
+      age = "Age (mean)",
+      sex = "Sex (count)",
+      psychotropic_medication = "Psychotropic Medication (count)",
+      bdi = "Depression: BDI-II (median)",
+      stai_s = "State Anxiety: STAI-S (median)",
+      stai_t = "Trait Anxiety: STAI-T (mean)",
+      sdq = "Somatoform Dissociation: SDQ-20 (median)",
+      maia_total = "Self Reported Interoeptive Awareness: MAIA total (mean)",
+      ias = "Self Reported Interoeptive Accuracy: IAS (median)",
+      insec_attach = "Insecure Attachment Sytel: ECR composite score (median)",
+      ecr_anx_adj = "Anxious Attachment Style: ECR (median)",
+      ecr_av_adj = "Avoidant Attachment Style: ECR (median)",
+      ctq_total = "Childhood Trauma: CTQ (median)",
+      sex_func = "Sexual Functioning: FSFI/MSFI (median)"
+      )
+  ) %>%
+  modify_header(list(label ~ "**Variable**")) %>%
+  modify_caption("**Demographics Overview**") %>%
+  modify_spanning_header(c("stat_1", "stat_2") ~ "**Group**") %>%
+  add_p(
+    test = list(
+      age = "t.test", 
+      sex = "fisher.test",
+      psychotropic_medication = "fisher.test", 
+      bdi = "wilcox.test",
+      stai_s = "wilcox.test", 
+      stai_t = "t.test", 
+      sdq = "wilcox.test", 
+      maia_total = "t.test", 
+      ias = "wilcox.test", 
+      insec_attach = "wilcox.test",
+      ecr_anx_adj = "wilcox.test",
+      ecr_av_adj = "wilcox.test",
+      ctq_total = "wilcox.test",
+      sex_func = "wilcox.test"
+    )
+  ) %>% 
+  add_overall(last = FALSE)
+
+# Print the table
+tbl1
+
+  # Save as png table
+  gt_table <- as_gt(tbl1) # convert to gt table
+  output_path <- file.path("Table1_Demographics.png")
+  gt::gtsave(gt_table, filename = output_path)
+
+  # Save as xlsx table
+  df_table <- as_tibble(tbl1)
+  output_path <- file.path("Table1_Demographics.xlsx")
+  library(writexl)
+  write_xlsx(df_table, path = output_path)
+```
+
+## 1.1 Female only: Menstrual Cycle
+
+```{r}
+  
+  # Table 2 for FEMALE SPECIFIC MENSTRUAL CYCLE
+  df_tbl_female <- df_female %>%
+  mutate(group = factor(group, levels = c("0", "1"), labels = c("HC", "FND")))  %>%
+  mutate(menopause = factor(menopause, levels = c("0", "1"), labels = c("no", "yes, in menopause"))) %>%
+  mutate(contraception = factor(contraception, levels = c("0", "1"), labels = c("no", "yes, intake of hormonal contraception"))) %>%
+  mutate(ovulation_phase = factor(ovulation_phase, levels = c("0", "1"), labels = c("no", "yes, in ovulation phase"))) 
+
+Data.t <- select(df_tbl_female, c("group", "menopause", "contraception", "ovulation_phase"))
+
+# Create the table summary
+tbl1_female <- Data.t %>%
+  tbl_summary(
+    by = group, # Grouping by 'group'
+    missing = "no",
+    statistic = list(
+      menopause = "{n} ({p})",
+      contraception = "{n} ({p})", 
+      ovulation_phase = "{n} ({p})"
+    ),
+    digits = list(menopause = 1, contraception = 1, ovulation_phase = 1),
+    label = list(
+      menopause = "In menopause",
+      contraception = "Intake of Hormonal Contraception",
+      ovulation_phase = "In Ovulation Phase (day 10-19 of natural cycle)"
+      )
+  ) %>%
+  modify_header(list(label ~ "**Variable**")) %>%
+  modify_caption("**Female Hormonal Overview**") %>%
+  modify_spanning_header(c("stat_1", "stat_2") ~ "**Group**") %>%
+  add_p(
+    test = list(
+      menopause = "fisher.test", 
+      contraception = "fisher.test",
+      ovulation_phase = "fisher.test"
+    )
+  ) %>% 
+  add_overall(last = FALSE)
+
+# Print the table
+tbl1_female
+
+  # Save as png table
+  gt_table <- as_gt(tbl1_female) # convert to gt table
+  output_path <- file.path("TableS1_FemaleHormones.png")
+  gt::gtsave(gt_table, filename = output_path)
+
+  # Save as xlsx table
+  df_table <- as_tibble(tbl1_female)
+  output_path <- file.path("TableS1_FemaleHormones.xlsx")
+  library(writexl)
+  write_xlsx(df_table, path = output_path)
+```
+
+# 2) Salivary Oxytocin
+
+```{r}
+#| warning: FALSE
+#| error: FALSE
+ #mean OXT
+hist(df$Oxytocin)
+summary(df$Oxytocin)
+
+# separate per group
+hist(df$Oxytocin[df$group=="0"]) # distribution HC only
+summary(df$Oxytocin[df$group=="0"]) # summary HC only
+median(df$Oxytocin[df$group=="0"]) # 6.52475
+IQR(df$Oxytocin[df$group=="0"]) # 3.12125
+summary(df_adherence$Oxytocin[df_adherence$group=="0"]) # summary HC only
+
+hist(df$Oxytocin[df$group=="1"]) # distribution FND only
+summary(df$Oxytocin[df$group=="1"]) # summary FND only
+median(df$Oxytocin[df$group=="1"]) # 7.611375
+IQR(df$Oxytocin[df$group=="1"]) # 5.568391
+summary(df_adherence$Oxytocin[df_adherence$group=="1"]) # summary FND only
+
+shapiro.test(df$Oxytocin) #  NOT normally distributed 
+res<-wilcox.test(df$Oxytocin[df$group=="1"], df$Oxytocin[df$group=="0"])
+res # sig difference across groups: p-value = 0.02475
+
+cohens_d <- calculate_cohens_d(df, "Oxytocin", "group", 1, 0) # group 1=FND, group=0 HC
+print(cohens_d) 
+
+#AUC OXT
+as.numeric(df$AUC_Oxytocin)
+hist(df$AUC_Oxytocin)
+summary(df$AUC_Oxytocin)
+
+
+# separate per group
+hist(df$AUC_Oxytocin[df$group=="0"]) # distribution HC only
+summary(df$AUC_Oxytocin[df$group=="0"]) # summary HC only
+median(df$AUC_Oxytocin[df$group=="0"], na.rm = TRUE) # 20.4115
+IQR(df$AUC_Oxytocin[df$group=="0"], na.rm = TRUE) # 9.89575
+
+hist(df$AUC_Oxytocin[df$group=="1"]) # distribution FND only
+summary(df$AUC_Oxytocin[df$group=="1"]) # summary FND only
+median(df$AUC_Oxytocin[df$group=="1"], na.rm = TRUE) # 23.5345
+IQR(df$AUC_Oxytocin[df$group=="1"], na.rm = TRUE) # 18.33256
+
+shapiro.test(df$AUC_Oxytocin) #  NOT normally distributed 
+res<-wilcox.test(df$AUC_Oxytocin[df$group=="1"], df$AUC_Oxytocin[df$group=="0"])
+res # NO sig difference across groups: p-value = 0.07006
+
+cohens_d <- calculate_cohens_d(df, "AUC_Oxytocin", "group", 1, 0) # group 1=FND, group=0 HC
+print(cohens_d) 
+
+
+#### Box-Plot with Jitter
+df_plot <- df %>%
+  mutate(group = factor(group, levels = c(0, 1), labels = c("HC", "FND")))
+
+df_plot_adherence <- df_adherence %>%
+  mutate(group = factor(group, levels = c(0, 1), labels = c("HC", "FND")))
+
+plotBoxplotGroups <- function(df, var, tit) {
+  ggplot(df, aes(x = group, y = !!rlang::sym(var), fill = group)) +
+    geom_boxplot(show.legend = TRUE) + 
+    labs(y = "Oxytocin pg/ml") + 
+    theme_classic() + 
+    scale_fill_manual(values = c("#868686FF", "#BB4038")) + 
+    scale_x_discrete(labels = c("HC", "FND")) +   
+    guides(fill = "none") + 
+    ggtitle(tit) +
+    xlab("") +
+    geom_jitter(shape = 16, position = position_jitter(0.2))
+}
+
+p1 <- plotBoxplotGroups(df_plot, "Oxytocin", tit = "") +  
+  stat_compare_means(method = "wilcox.test", paired = FALSE, label.x = 1.3)
+show(p1)
+
+p2 <- plotBoxplotGroups(df_plot, "AUC_Oxytocin", tit = "AUC Oxytocin") +  
+  stat_compare_means(method = "wilcox.test", paired = FALSE, label.x = 1.3)
+show(p2)
+
+p3 <- plotBoxplotGroups(df_plot_adherence, "Oxytocin", "Oxytocin - Adherence (N = 79)") +  
+  stat_compare_means(method = "wilcox.test", paired = FALSE, label.x = 1.3)
+p3
+
+ggsave("Figure_2a_Oxytocin.tiff", 
+       plot = p1, 
+       dpi = 600, 
+       width = 6, 
+       height = 4, 
+       units = "in", 
+       device = "tiff", 
+       compression = "lzw")
+
+
+# Table 1 for Demographics
+Data.t <- select(df_tbl, c("group", "Oxytocin", "AUC_Oxytocin"))
+
+# Create the table summary
+tbl2 <- Data.t %>%
+  tbl_summary(
+    by = group, # Grouping by 'group'
+    missing = "no",
+    statistic = list(
+      Oxytocin = "{median} ({IQR})",
+      AUC_Oxytocin = "{median} ({IQR})"    ),
+    digits = list(Oxytocin = 2, AUC_Oxytocin = 2),
+    label = list(
+      Oxytocin = "average Oxytocin in pg/ml: median, (IQR)",
+      AUC_Oxytocin = "AUC Oxytocin for complete dataset only: median (IQR)"
+      )
+  ) %>%
+  modify_header(list(label ~ "**Variable**")) %>%
+  modify_caption("**Demographics Overview**") %>%
+  modify_spanning_header(c("stat_1", "stat_2") ~ "**Group**") %>%
+  add_p(
+    test = list(
+      Oxytocin = "wilcox.test",
+      AUC_Oxytocin = "wilcox.test"
+    )
+  ) %>% 
+  add_overall(last = FALSE)
+
+# Print the table
+tbl2
+
+  # Save as png table
+  gt_table <- as_gt(tbl2) # convert to gt table
+  output_path <- file.path("Table2_Oxytocin.png")
+  gt::gtsave(gt_table, filename = output_path)
+
+  # Save as xlsx table
+  df_table <- as_tibble(tbl2)
+  output_path <- file.path("Table2_Oxytocin.xlsx")
+  library(writexl)
+  write_xlsx(df_table, path = output_path)
+
+```
+
+## 2.1 Timestamps
+
+```{r}
+#| warning: FALSE
+#| error: FALSE
+
+# create subset for saliva samples
+df_saliva <- df %>% dplyr::select(pcode, group, starts_with("saliva"))
+
+# save the timestamps in the correct format to calculate the mean time (note it will add a 1970-01-01 before all the timestamps, 
+# but that does not need to bother us as in the end it will calculate the difference and protray it back in hh:mm:ss)
+df_saliva$saliva_waking_time <- as.POSIXct(df_saliva$saliva_waking_time, format = "%H:%M:%S", tz = "UTC")
+df_saliva$saliva_meal_time <- as.POSIXct(df_saliva$saliva_meal_time, format = "%H:%M:%S", tz = "UTC")
+df_saliva$saliva_pretask_time <- as.POSIXct(df_saliva$saliva_pretask_time, format = "%H:%M:%S", tz = "UTC")
+df_saliva$saliva_posttask_time <- as.POSIXct(df_saliva$saliva_posttask_time, format = "%H:%M:%S", tz = "UTC")
+
+# calculate mean time
+mean_time_waking <- mean(df_saliva$saliva_waking_time, na.rm = TRUE)
+mean_time_waking <- format(mean_time_waking, "%H:%M:%S")
+
+mean_time_meal <- mean(df_saliva$saliva_meal_time, na.rm = TRUE)
+mean_time_meal <- format(mean_time_meal, "%H:%M:%S")
+
+mean_time_pretask <- mean(df_saliva$saliva_pretask_time, na.rm = TRUE)
+mean_time_pretask <- format(mean_time_pretask, "%H:%M:%S")
+
+mean_time_posttask <- mean(df_saliva$saliva_posttask_time, na.rm = TRUE) 
+mean_time_posttask <- format(mean_time_posttask, "%H:%M:%S")
+
+# Calculate standard deviations (in seconds)
+sd_time_waking <- sd(df_saliva$saliva_waking_time, na.rm = TRUE)
+sd_time_meal <- sd(df_saliva$saliva_meal_time, na.rm = TRUE)
+sd_time_pretask <- sd(df_saliva$saliva_pretask_time, na.rm = TRUE)
+sd_time_posttask <- sd(df_saliva$saliva_posttask_time, na.rm = TRUE)
+
+# Convert standard deviations to minutes
+sd_time_waking_min <- sd_time_waking / 60
+sd_time_meal_min <- sd_time_meal / 60
+sd_time_pretask_min <- sd_time_pretask / 60
+sd_time_posttask_min <- sd_time_posttask / 60
+
+# Create a data frame to display the means and standard deviations (in minutes)
+mean_times <- data.frame(
+  Timepoint = c("Waking", "Meal", "Pre-task", "Post-task"),
+  Mean_Time = c(mean_time_waking, mean_time_meal, mean_time_pretask, mean_time_posttask),
+  SD_Time_Minutes = c(sd_time_waking_min, sd_time_meal_min, sd_time_pretask_min, sd_time_posttask_min)
+)
+
+# Print the table
+print(mean_times)
+
+# Save the data frame as a text file in your working directory
+write.table(mean_times, file = "1.1_mean_sd_times_saliva.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+
+```
+
+## 2.2 Visualization of OXT-Timecourse
+
+```{r}
+#| warning: FALSE
+#| error: FALSE
+# Ensure factors
+df_OT_long$group <- as.factor(df_OT_long$group)
+df_OT_long$timepoint <- as.factor(df_OT_long$timepoint)
+
+df_plot <- df_OT_long %>%
+  mutate(group = factor(group, levels = c("0", "1"), labels = c("HC", "FND")))
+
+plotOXT <- ggline(
+  df_plot, x = "timepoint", y = "Oxytocin",
+  linetype = "group", shape = "group", point.size = 0.6,
+  add = c("mean_se"), color = "group", size = 0.6
+) +
+  scale_color_manual(values = c("#868686FF", "#BB4038")) +  # Add more colors if needed
+  theme(
+    legend.position = "top",
+    legend.background = element_rect(linewidth = 0.4, colour = "black")
+  ) +
+  labs(y = "Oxytocin [pg/ml]")
+
+plotOXT <- ggpar(
+  plotOXT, font.legend = 10, font.tickslab = 10, font.subtitle = 10,
+  font.x = 10, font.y = 10, legend.title = "Groups",
+  subtitle = ""
+)
+
+plotOXT
+
+
+ggsave("Figure_2b_OxytocinTimecourse.tiff", 
+       plot = plotOXT, 
+       dpi = 600, 
+       width = 6, 
+       height = 4, 
+       units = "in", 
+       device = "tiff", 
+       compression = "lzw")
+
+
+
+####### COMPLETE ADHERENCESUBSET (N=79)
+# Ensure factors
+df_OT_long_adherence$group <- as.factor(df_OT_long_adherence$group)
+df_OT_long_adherence$timepoint <- as.factor(df_OT_long_adherence$timepoint)
+
+df_plot_adherence <- df_OT_long_adherence %>%
+  mutate(group = factor(group, levels = c("0", "1"), labels = c("HC", "FND")))
+
+plotOXT_adherence <- ggline(
+  df_plot_adherence, x = "timepoint", y = "Oxytocin",
+  linetype = "group", shape = "group", point.size = 0.5,
+  add = c("mean_se"), color = "group", size = 0.5
+) +
+  scale_color_manual(values = c("#868686FF", "#BB4038")) +  # Add more colors if needed
+  theme(
+    legend.position = "top",
+    legend.background = element_rect(linewidth = 0.2, colour = "black")
+  ) +
+  labs(y = "Oxytocin [pg/ml]")
+
+plotOXT_adherence <- ggpar(
+  plotOXT_adherence, font.legend = 8, font.tickslab = 8, font.subtitle = 9,
+  font.x = 8, font.y = 8, legend.title = "Groups",
+  subtitle = ""
+)
+
+plotOXT_adherence
+
+
+```
+
+```{r}
+# Filter data for individual participant
+df_individual <- df_plot %>% dplyr::filter(pcode == 73) # for example a male HC
+
+# Overlay the individual participant's data
+ plotOXT +
+   geom_point(data = df_individual, aes(x = timepoint, y = Oxytocin), 
+              color = "blue", size = 2, shape = 18) +  # Blue diamond for visibility
+   geom_line(data = df_individual, aes(x = timepoint, y = Oxytocin, group = pcode),
+             color = "blue", linetype = "dashed")
+```
+
+## 2.3 Group Differences across Time
+
+```{r}
+#| warning: FALSE
+#| error: FALSE
+df_FULL %>%
+  dplyr::select(group, Oxytocin_waking, Oxytocin_lunch, Oxytocin_pretask, Oxytocin_posttask) %>%
+  tidyr::pivot_longer(
+    cols = starts_with("Oxytocin_"),
+    names_to = "timepoint",
+    values_to = "value"
+  ) %>%
+  dplyr::group_by(group, timepoint) %>%
+  dplyr::summarise(
+    n_nonmissing = sum(!is.na(value)),
+    n_missing = sum(is.na(value)),
+    .groups = "drop"
+  )
+####### calculate group differences
+#  NOT normally distributed 
+shapiro.test(df$Oxytocin_waking)
+shapiro.test(df$Oxytocin_lunch)
+shapiro.test(df$Oxytocin_pretask)
+shapiro.test(df$Oxytocin_posttask)
+
+#  Wilcoxon Test
+Oxy_waking <-wilcox.test(df$Oxytocin_waking[df$group=="1"], df$Oxytocin_waking[df$group=="0"])
+Oxy_lunch <-wilcox.test(df$Oxytocin_lunch[df$group=="1"], df$Oxytocin_lunch[df$group=="0"])
+Oxy_pretask <-wilcox.test(df$Oxytocin_pretask[df$group=="1"], df$Oxytocin_pretask[df$group=="0"])
+Oxy_posttask <-wilcox.test(df$Oxytocin_posttask[df$group=="1"], df$Oxytocin_posttask[df$group=="0"])
+
+# Extract p-values
+p_values <- c(
+  Oxy_waking$p.value, 
+  Oxy_lunch$p.value, 
+  Oxy_pretask$p.value, 
+  Oxy_posttask$p.value)
+
+# Adjust p-values using FDR correction
+p_adjusted <- p.adjust(p_values, method = "fdr")
+
+# Create a results dataframe
+adjusted_results <- data.frame(
+  Comparison = c("Oxy_waking", "Oxy_lunch", "Oxy_pre", "Oxy_post"),
+  Raw_p_value = p_values,
+  Adjusted_p_value = p_adjusted)
+# Print results
+print(adjusted_results)
+
+
+  
+cohens_d <- calculate_cohens_d(df, "Oxytocin_lunch", "group", 1, 0) # group 1=FND, group=0 HC
+print(cohens_d) 
+
+
+ 	 
+# Run a linear mixed model with factor group (between subject factor; FND vs HC) and timepoint (within subject; repeated measurement per participant), and (1 | pcode) accounts for within-subject correlation, by letting each subject have their own "starting point" e.g. intercept
+model_lmm <- lmer(Oxytocin ~ group + timepoint + (1 | pcode), data = df_OT_long)
+summary(model_lmm) # GROUP AND timepoint differences
+anova(model_lmm)
+
+# ADDING interaction term: allowing group and timepoint to interact (different slopes per group allowes)
+model_lmm <- lmer(Oxytocin ~ group * timepoint + (1 | pcode), data = df_OT_long)
+# add covariates of interest
+summary(model_lmm)
+anova(model_lmm)
+# only timepoint PRE TASK sig (no interaction)
+# Since no interaction effects are significant, the model suggests that FND and HC might not differ much at any specific timepoint, meaning the original group1 effect was an averaged difference that disappears when time is considered.
+
+
+
+
+####### COMPLETE ADHERENCE SUBSET #######
+# Perform correlation tests separately per timepoints
+Oxy_waking_adherence <-wilcox.test(df_adherence$Oxytocin_waking[df_adherence$group=="1"], df_adherence$Oxytocin_waking[df_adherence$group=="0"])
+Oxy_lunch_adherence <-wilcox.test(df_adherence$Oxytocin_lunch[df_adherence$group=="1"], df_adherence$Oxytocin_lunch[df_adherence$group=="0"])
+Oxy_pretask_adherence <-wilcox.test(df_adherence$Oxytocin_pretask[df_adherence$group=="1"], df_adherence$Oxytocin_pretask[df_adherence$group=="0"])
+Oxy_posttask_adherence <-wilcox.test(df_adherence$Oxytocin_posttask[df_adherence$group=="1"], df_adherence$Oxytocin_posttask[df_adherence$group=="0"])
+
+# Extract p-values
+p_values_adherence <- c(
+  Oxy_waking_adherence$p.value, 
+  Oxy_lunch_adherence$p.value, 
+  Oxy_pretask_adherence$p.value, 
+  Oxy_posttask_adherence$p.value)
+
+# Adjust p-values using FDR correction
+p_adjusted_adherence <- p.adjust(p_values_adherence, method = "fdr")
+
+# Create a results dataframe
+adjusted_results_adherence <- data.frame(
+  Comparison = c("Oxy_waking_adherence", "Oxy_lunch_adherence", "Oxy_pre_adherence", "Oxy_post_adherence"),
+  Raw_p_value = p_values_adherence,
+  Adjusted_p_value = p_adjusted_adherence)
+# Print results
+print(adjusted_results_adherence)
+
+
+# Run a linear regression allowing group and timepoint to itneract (different slopes per group allowes)
+OXTlm_adherence <- lm(formula = Oxytocin ~ group+timepoint, data = df_OT_long_adherence) # add covariates of interest
+summary(OXTlm_adherence) # GROUP AND timepoint differences
+
+# interaction term: allowing group and timepoint to interact (different slopes per group allowes)
+OXTlm_adherence <- lm(formula = Oxytocin ~ group*timepoint, data = df_OT_long_adherence) # add covariates of interest
+summary(OXTlm_adherence)
+# only timepoint PRE TASK sig (no interaction)
+# Since no interaction effects are significant, the model suggests that FND and HC might not differ much at any specific timepoint, meaning the original group1 effect was an averaged difference that disappears when time is considered.
+
+
+```
+
+## 2.4 Linear Regressions (Oxytocin control for co-variates of no-interest)
+
+```{r}
+
+#| warning: FALSE
+#| error: FALSE
+# We first run a linear model to correct for confounds and then we run an anova on the fitted data. 
+##Linear Model with average Oxytocin------------------------------------------------------------
+
+# testing whether the biological covariates change the difference between groups in OXT
+OXTlm <- lm(formula = Oxytocin ~ group, data = df) # group difference
+summary(OXTlm) # sig group difference
+
+OXTlm <- lm(formula = Oxytocin ~ group + sex + age, data = df) 
+summary(OXTlm) # still sig group differencees after controlling for sex and age
+
+OXTlm <- lm(formula = Oxytocin ~ group + OXT_flag_high, data = df) 
+summary(OXTlm) # group NOT different anymore (p = 0.083) but OXT flag high is sig (p = 0.046)
+
+  df %>%
+  group_by(OXT_flag_high) %>%
+  dplyr::summarise(
+    n = n(),
+    mean_OXT = mean(Oxytocin, na.rm = TRUE),
+    sd_OXT = sd(Oxytocin, na.rm = TRUE),
+    min_OXT = min(Oxytocin, na.rm = TRUE),
+    max_OXT = max(Oxytocin, na.rm = TRUE)
+  )
+
+  OXTlm <- lm(formula = Oxytocin ~ group + OXT_flag_high_v2, data = df) 
+  summary(OXTlm) # group is still sig (p = 0.0032) but also flag high is sig (p = 0.0149)
+  ## control for OXT lavels depending on flag
+df %>%
+  group_by(OXT_flag_high_v2) %>%
+  dplyr::summarise(
+    n = n(),
+    mean_OXT = mean(Oxytocin, na.rm = TRUE),
+    sd_OXT = sd(Oxytocin, na.rm = TRUE),
+    min_OXT = min(Oxytocin, na.rm = TRUE),
+    max_OXT = max(Oxytocin, na.rm = TRUE)
+  )
+  
+  OXTlm <- lm(formula = Oxytocin ~ group + contraception, data = df) 
+  summary(OXTlm) #group is sig (p = 0.003), contraception not
+
+  OXTlm <- lm(formula = Oxytocin ~ group + mc_phase, data = df) 
+  summary(OXTlm) # nothing significant
+
+
+### different important covariates of comorbidities
+OXTlm <- lm(formula = Oxytocin ~ group + sex + age + anx_dep_SUM, data = df) 
+summary(OXTlm) # sig when controlling for affective symptoms
+
+OXTlm <- lm(formula = Oxytocin ~ group + sex + age + psychotropic_medication, data = df) 
+summary(OXTlm) # not sig for controlling for medication (p = 0.051 while medication has not effect on OX either)
+
+# influence of sexual functioning
+  OXTlm <- lm(formula = Oxytocin ~ group + sex + age + sex_func , data = df) 
+summary(OXTlm) # group remains sig, while sex_func is not sig
+
+```
+
+## 2.4.2 Linear Regressions (AUC Oxytocin control for co-variates of no-interest)
+
+```{r}
+
+#| warning: FALSE
+#| error: FALSE
+# We first run a linear model to correct for confounds and then we run an anova on the fitted data. 
+##Linear Model with average Oxytocin------------------------------------------------------------
+
+# testing whether the biological covariates change the difference between groups in OXT
+OXTlm <- lm(formula = AUC_Oxytocin ~ group, data = df) # group difference
+summary(OXTlm) # sig group difference
+
+OXTlm <- lm(formula = AUC_Oxytocin ~ group + sex + age, data = df) 
+summary(OXTlm) # still sig group differencees after controlling for sex and age
+
+OXTlm <- lm(formula = AUC_Oxytocin ~ group + OXT_flag_high, data = df) 
+summary(OXTlm) # group NOT different anymore (p = 0.083) but OXT flag high is sig (p = 0.046)
+
+  df %>%
+  group_by(OXT_flag_high) %>%
+  dplyr::summarise(
+    n = n(),
+    mean_OXT = mean(AUC_Oxytocin, na.rm = TRUE),
+    sd_OXT = sd(AUC_Oxytocin, na.rm = TRUE),
+    min_OXT = min(AUC_Oxytocin, na.rm = TRUE),
+    max_OXT = max(AUC_Oxytocin, na.rm = TRUE)
+  )
+
+  OXTlm <- lm(formula = AUC_Oxytocin ~ group + OXT_flag_high_v2, data = df) 
+  summary(OXTlm) # group is still sig (p = 0.0032) but also flag high is sig (p = 0.0149)
+  ## control for OXT lavels depending on flag
+df %>%
+  group_by(OXT_flag_high_v2) %>%
+  dplyr::summarise(
+    n = n(),
+    mean_OXT = mean(AUC_Oxytocin, na.rm = TRUE),
+    sd_OXT = sd(AUC_Oxytocin, na.rm = TRUE),
+    min_OXT = min(AUC_Oxytocin, na.rm = TRUE),
+    max_OXT = max(AUC_Oxytocin, na.rm = TRUE)
+  )
+  
+  OXTlm <- lm(formula = AUC_Oxytocin ~ group + contraception, data = df) 
+  summary(OXTlm) #group is sig (p = 0.003), contraception not
+
+  OXTlm <- lm(formula = AUC_Oxytocin ~ group + mc_phase, data = df) 
+  summary(OXTlm) # nothing significant
+
+
+### different important covariates of comorbidities
+OXTlm <- lm(formula = AUC_Oxytocin ~ group + sex + age + anx_dep_SUM, data = df) 
+summary(OXTlm) # sig when controlling for affective symptoms
+
+OXTlm <- lm(formula = AUC_Oxytocin ~ group + sex + age + psychotropic_medication, data = df) 
+summary(OXTlm) # not sig for controlling for medication (p = 0.051 while medication has not effect on OX either)
+
+# influence of sexual functioning
+  OXTlm <- lm(formula = AUC_Oxytocin ~ group + sex + age + sex_func , data = df) 
+summary(OXTlm) # group remains sig, while sex_func is not sig
+
+```
+
+# 3) Covariates of Interest: Satiety / Hunger
+
+## 3.1 Linear Regressions per Timepoint
+
+```{r}
+#| warning: FALSE
+#| error: FALSE
+# Oxytocin drops after awakening (Dam et al 2018)
+# Oxytocin decreases after intake of a meal; low OXT = reduced hunger and increased fullness  (Aulinas et al, 2018)
+
+# LINEAR REGRESSION
+# testing whether the biological covariates change the difference between groups in OXT
+OXTlm <- lm(formula = Oxytocin_waking ~ group + saliva_waking_satiety + saliva_waking_appetite, data = df) 
+summary(OXTlm) # only appetite sig
+
+  OXTlm <- lm(formula = Oxytocin_waking ~ group*saliva_waking_appetite, data = df) 
+  summary(OXTlm) # only appetite sig
+
+OXTlm <- lm(formula = Oxytocin_lunch ~ group + saliva_meal_satiety + saliva_meal_appetite, data = df) 
+summary(OXTlm) # still sig group differences, but also sig satiety
+
+  OXTlm <- lm(formula = Oxytocin_lunch ~ group * saliva_meal_satiety, data = df) 
+  summary(OXTlm) # still sig group differences, but also sig satiety
+
+OXTlm <- lm(formula = Oxytocin_pretask ~ group+ saliva_pretask_satiety + saliva_pretask_appetite, data = df) 
+summary(OXTlm) # nothing sig
+
+OXTlm <- lm(formula = Oxytocin_posttask ~ group + saliva_posttask_satiety + saliva_posttask_appetite, data = df) 
+summary(OXTlm) # group and appetite
+  
+  OXTlm <- lm(formula = Oxytocin_posttask ~ group * saliva_posttask_appetite, data = df) 
+  summary(OXTlm) # group and appetite
+
+
+plot_satiety <- ggscatter(df_plot, x = "saliva_meal_satiety", y = "Oxytocin_lunch",fill = "group", color = "group",
+             add = "reg.line", conf.int = TRUE, 
+             cor.coef = FALSE, cor.method = "spearman",
+             xlab = "Self-reported Satiety 30min post Lunch", ylab = "Mean Oxytocin in pg/ml") + 
+  stat_cor(aes(color = group), method = "spearman", 
+           label.x = Inf, label.y = c(Inf, Inf), 
+           hjust = 1.1, vjust = c(2, 4)) + 
+  scale_fill_manual(values = c("#868686FF", "#f19c8c")) +
+  scale_color_manual(values = c("#868686FF", "#f19c8c")) +
+  ggtitle("Satiety and Oxytocin")   
+
+
+```
+
+# 4) Risk-Factors
+
+## 4.1 Childhood Trauma
+
+```{r}
+#| warning: FALSE
+#| error: FALSE
+
+# LINEAR REGRESSION
+# testing whether the biological covariates change the difference between groups in OXT
+OXTlm <- lm(formula = Oxytocin ~ group*ctq_total, data = df) 
+summary(OXTlm)
+
+# Correlation
+cor.test(df$ctq_total, df$Oxytocin, method = "spearman") # no corr
+
+#### Same for AUC Oxytocin
+# lm
+OXTlm <- lm(formula = AUC_Oxytocin ~ group*ctq_total, data = df) 
+summary(OXTlm)
+# Correlation
+cor.test(df$ctq_total, df$AUC_Oxytocin, method = "spearman") # no corr
+
+# Correlation separate per group and subscale
+cor.test(df_FND$ctq_total, df_FND$Oxytocin, method = "spearman") # no corr
+cor.test(df_FND$ctq_emoab, df_FND$Oxytocin, method = "spearman") # no corr
+cor.test(df_FND$ctq_physab, df_FND$Oxytocin, method = "spearman") # no corr
+cor.test(df_FND$ctq_sexab, df_FND$Oxytocin, method = "spearman") # no corr
+cor.test(df_FND$ctq_emoneg, df_FND$Oxytocin, method = "spearman") # no corr
+cor.test(df_FND$ctq_physneg, df_FND$Oxytocin, method = "spearman") # no corr
+
+cor.test(df_HC$ctq_total, df_HC$Oxytocin, method = "spearman") #  no corr
+
+
+## CTQ subscales 
+ctq<-dplyr::select(df, pcode, group, ctq_emoab:ctq_minim)
+  
+  #Make long data
+  ctq_long <- tidyr::gather(ctq, key = "trauma_type", value = "score", -pcode, -group) # make data set long (so that every p code has 6 rows, one for each of the subscores of ctq)
+  ctq_long$trauma_type<-as.factor(ctq_long$trauma_type)
+  ctq_long$trauma_type <- factor(ctq_long$trauma_type, levels = rev(levels(ctq_long$trauma_type)))
+  
+  ctq_long$pcode<-as.factor(ctq_long$pcode)
+  ctq_long$score<-as.numeric(ctq_long$score)
+  ctq_long$group <- as.factor(ctq_long$group)
+  ctq_long$group <- factor(ctq_long$group, levels = c(0, 1), labels = c("HC", "FND")) #ONLY RUN WHEN NOT ALREADY DONE BEFORE FOR TABLE
+  
+  # Calculate mean, median, CI, SE
+  library(dplyr)
+  alpha=0.05
+  ctq.summary <- ctq_long %>%
+    group_by(group,trauma_type)%>%
+    dplyr::summarise(
+      se = sd(score) / sqrt(length(score)),
+      t=qt((1-alpha)/2 + .5, length(score)-1),   # tend to 1.96 if sample size is big enough
+      CI=t*se, 
+      score = mean(score), .groups = 'drop') # you can use here mean or median depending on data distribution
+
+  ctq.summary # this is the order it will afterwards also appear in the graph, so make sure the names are correct
+  
+  # STATISTICS
+  # Multiple t-tests using FDR correction for multiple comparisons (FDR or bonferroni)
+  library(rstatix)
+  stat.test <- ctq_long %>%
+    group_by(trauma_type) %>%
+    wilcox_test(score ~ group) %>%
+    adjust_pvalue(method = "fdr") %>% # if you don't want to correct for multiple comparisons you can comment out this line
+    add_significance()
+  stat.test #  subscales physical abuse, emotional neglect and emotional abuse are significant different across groups
+  
+  # Save the output to a text file
+  write.table(stat.test, file = "CTQ_subscales_stats.txt", sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+  
+  # Filter for significant results
+  significant_results <- stat.test %>%
+    filter(p.adj.signif == "*") %>%
+    pull(trauma_type)  # Extract the names of the significant subscales
+  
+  # VISUALIZATION
+  # Plot
+  ctq.summary <- ctq.summary %>%
+    mutate(significance = ifelse(trauma_type %in% significant_results, "*", ""))  # Add a column for asterisks
+  
+  dodge <- position_dodge(width=0.9)
+  ctqplot<-ctq.summary%>%
+    ggplot(aes(y = score, x = trauma_type, ymin=score-CI, ymax=score+CI, fill = group)) +
+    #ylim(-0.5,15)+
+    geom_bar(position=position_dodge(), stat="identity")+
+    geom_errorbar(position = dodge, width = 0.3)+
+    labs(x = "CTQ Subscores", y = "Scores")+
+    scale_fill_manual(values = c("#868686FF", "#BB4038"))+
+    ggtitle("Childhood Trauma Questionnaire") + theme(plot.title = element_text(hjust = 0.5))+#add label of y-axis
+    theme_classic(base_size = 9) +       #select underlying theme
+    theme(axis.title.x=element_blank(),axis.text.y=element_text(size = 12, face ="bold"), 
+          axis.text.x = element_text(angle = 45, hjust = 1, size = 12, face = "bold"), 
+          legend.title = element_text(size = 12, face = "bold"), 
+          legend.text = element_text(size=12), plot.title = element_text(hjust = 0.5))+ 
+    scale_x_discrete(
+      labels=c("Sexual Abuse", "Physical Neglect", "Physical Abuse", "Minimization",  "Emotional Neglect", "Emotional Abuse"))+ 
+    guides(fill=guide_legend(title="Groups"))+
+    geom_text(aes(label = significance), # define position
+              position = position_dodge(width = 0.9), 
+              vjust = -0.5, size = 5, color = "black")  # Add significance asterisks above bars
+  
+  # ! careful in naming the graph (labels=c() ); print the order of the subscales wit ctq.summary and then name it in the followig order for the graph
+  ctqplot
+  
+  # Save plot
+  plot.new()
+  tiff("CTQ_Scores.tiff", height = 360, width = 500, units='mm' ,
+       compression = "lzw", res = 300)    
+  ctqplot
+  dev.off() # Turn the PDF device off
+  
+  
+  ####### OXT  with subscales CTQ
+
+perform_correlation_tests <- function(variable, df) {
+  tests <- list(
+    EMOAB = cor.test(df[[variable]], df$ctq_emoab, method = "pearson"),
+    PHYSAB = cor.test(df[[variable]], df$ctq_physab, method = "pearson"),
+    SEXAB = cor.test(df[[variable]], df$ctq_sexab, method = "pearson"),
+    EMONEG = cor.test(df[[variable]], df$ctq_emoneg, method = "pearson"),
+    PHYSNED = cor.test(df[[variable]], df$ctq_physneg, method = "pearson")
+  )
+  
+  # Extract p-values and correlation coefficients (r)
+  p_values <- sapply(tests, function(x) x$p.value) # Extract pvalue
+  r_values <- sapply(tests, function(x) x$estimate)  # Extract correlation coefficient (r)
+  p_adjusted <- p.adjust(p_values, method = "fdr")  # Adjust p-values
+  
+  # Store results in a dataframe
+  results <- data.frame(
+    Comparison = paste(variable, names(p_values), sep = "_"),
+    Correlation_Coefficient_r = r_values,
+    Raw_p_value = p_values,
+    Adjusted_p_value = p_adjusted
+  )
+  
+  print(results)  # Display results in console
+  return(results)  # Return the dataframe
+}
+
+results <- perform_correlation_tests("Oxytocin", df)
+results # no subscale sig associated with Oxytocin
+  
+```
+
+## 4.2 Attachment-Style
+
+```{r}
+# running lm with attachment, allowing interaction
+OXTlm <- lm(formula = Oxytocin ~ group * insec_attach, data = df) 
+summary(OXTlm) # both group and insec attachement (trend for interaction)
+
+# Fit model in order that we can see the slope separate for each group 
+model <- lm(Oxytocin ~ group * insec_attach, data = df)
+
+# Probing the interaction
+emm <- emtrends(model, ~ group, var = "insec_attach")
+summary(emm)
+
+# For HC the slope for insecure attachment is 0.446, with a 95% CI of [0.018, 0.874] indicating higher attachment insecurity is significantly associated with higher Oxytocin levels
+# For FND the slope for insecure attachment is −0.094, with a CI of [−0.470, 0.283], containing zero and thus not significant, indicating no (or slighly negative) association between attachment insecurity and Oxytocin levels. The CI does not include zero → significant.
+
+## running correlation overall
+cor.test(df$insec_attach, df$Oxytocin, method = "spearman") # no corr
+
+## running correlation separate per group
+cor.test(df_FND$insec_attach, df_FND$Oxytocin, method = "spearman") # no corr
+cor.test(df_HC$insec_attach, df_HC$Oxytocin, method = "spearman") #  r = 0.42, p = 0.005
+
+
+#### same for AUC
+# running lm with attachment, allowing interaction
+OXTlm <- lm(formula = AUC_Oxytocin ~ group * insec_attach, data = df) 
+summary(OXTlm) # both group and insec attachement (trend for interaction)
+
+## running correlation overall
+cor.test(df$insec_attach, df$AUC_Oxytocin, method = "spearman") # no corr
+
+## running correlation separate per group
+cor.test(df_FND$insec_attach, df_FND$AUC_Oxytocin, method = "spearman") # no corr
+cor.test(df_HC$insec_attach, df_HC$AUC_Oxytocin, method = "spearman") #  r = 0.42, p = 0.005
+
+# more detailed on the type of insecure attachment OXYTOCIN AVERAGE
+cor.test(df_FND$ecr_anx_adj, df_FND$Oxytocin, method = "spearman") # no corr
+cor.test(df_FND$ecr_av_adj, df_FND$Oxytocin, method = "spearman") # no corr
+
+cor.test(df_HC$ecr_anx_adj, df_HC$Oxytocin, method = "spearman") # sig corr r = 0.40, p = 0.006
+cor.test(df_HC$ecr_av_adj, df_HC$Oxytocin, method = "spearman") # sig corr r = 0.29, p = 0.049
+
+
+## visualization
+df_plot <- df %>%
+  mutate(
+    group = factor(group, levels = c("0", "1"), labels = c("HC", "FND")),
+    sex = factor(sex, levels = c("1", "2"), labels = c("female", "male"))
+  )
+
+plot_insecure <- ggscatter(df_plot, x = "insec_attach", y = "Oxytocin",fill = "group", color = "group",
+             add = "reg.line", conf.int = TRUE, 
+             cor.coef = FALSE, cor.method = "spearman",
+             xlab = "Insecure Attachment (Sum Score ECR)", ylab = "Mean Oxytocin in pg/ml") + 
+  stat_cor(aes(color = group), method = "spearman", 
+           label.x = Inf, label.y = c(Inf, Inf), 
+           hjust = 1.1, vjust = c(2, 4)) + 
+  scale_fill_manual(values = c("#868686FF", "#f19c8c")) +
+  scale_color_manual(values = c("#868686FF", "#f19c8c")) +
+  ggtitle("Attachment and Oxytocin")   +
+  theme(plot.margin = margin(t = 12, r = 12, b = 20, l = 2))
+plot_insecure
+
+
+ggsave("Figure_3_OxytocinInsecure.tiff", 
+       plot = plot_insecure, 
+       dpi = 600, 
+       width = 6, 
+       height = 4, 
+       units = "in", 
+       device = "tiff", 
+       compression = "lzw")
+
+plot_anxious <- ggscatter(df_plot, x = "ecr_anx_adj", y = "Oxytocin",fill = "group", color = "group",
+             add = "reg.line", conf.int = TRUE, 
+             cor.coef = FALSE, cor.method = "spearman",
+             xlab = "IAnxious Attachment (ECR)", ylab = "Mean Oxytocin in pg/ml") + 
+  stat_cor(aes(color = group), method = "spearman", 
+           label.x = Inf, label.y = c(Inf, Inf), 
+           hjust = 1.1, vjust = c(2, 4)) + 
+  scale_fill_manual(values = c("#868686FF", "#f19c8c")) +
+  scale_color_manual(values = c("#868686FF", "#f19c8c")) 
+
+plot_avoidant<- ggscatter(df_plot, x = "ecr_av_adj", y = "Oxytocin",fill = "group", color = "group",
+             add = "reg.line", conf.int = TRUE, 
+             cor.coef = FALSE, cor.method = "spearman",
+             xlab = "Avoidant Attachmen (ECR)", ylab = "Mean Oxytocin in pg/ml") + 
+  stat_cor(aes(color = group), method = "spearman", 
+           label.x = Inf, label.y = c(Inf, Inf), 
+           hjust = 1.1, vjust = c(2, 4)) + 
+  scale_fill_manual(values = c("#868686FF", "#f19c8c")) +
+  scale_color_manual(values = c("#868686FF", "#f19c8c"))
+
+attachment_plots <- grid.arrange(plot_anxious, plot_avoidant, ncol = 2)
+attachment_plots
+
+ggsave("Figure_S1_OxytocinAttachment.tiff", 
+       plot = attachment_plots, 
+       dpi = 600, 
+       width = 6, 
+       height = 4, 
+       units = "in", 
+       device = "tiff", 
+       compression = "lzw")
+
+```
+
+Correlation with Oxytocin
+
+```{r}
+#| warning: FALSE
+#| error: FALSE
+	
+# total sexual functioning
+cor.test(df$sex_func, df$Oxytocin, method = "pearson") # no corr
+
+# separate per group
+cor.test(df_female$fsfi_total_adj, df_female$Oxytocin, method = "pearson") # no corr
+cor.test(df_male$msfi_total_adj, df_male$Oxytocin, method = "pearson") # no corr
+
+df_plot <- df_female %>%
+  mutate(
+    group = factor(group, levels = c("0", "1"), labels = c("HC", "FND"))  )
+
+plot_female <- ggscatter(df_plot, x = "fsfi_total", y = "Oxytocin",fill = "group", color = "group",
+             add = "reg.line", conf.int = TRUE, 
+             cor.coef = FALSE, cor.method = "spearman",
+             xlab = "Sexual Functioning (FSFI)", ylab = "Mean Oxytocin in pg/ml") + 
+  stat_cor(aes(color = group), method = "spearman", 
+           label.x = Inf, label.y = c(Inf, Inf), 
+           hjust = 1.1, vjust = c(2, 4)) + 
+  scale_fill_manual(values = c("#868686FF", "#f19c8c")) +
+  scale_color_manual(values = c("#868686FF", "#f19c8c")) +
+  ggtitle("Females")   
+  
+
+df_plot <- df_male %>%
+  mutate(
+    group = factor(group, levels = c("0", "1"), labels = c("HC", "FND"))  )
+
+plot_male <- ggscatter(df_plot, x = "msfi_total", y = "Oxytocin",fill = "group", color = "group",
+             add = "reg.line", conf.int = TRUE, 
+             cor.coef = FALSE, cor.method = "spearman",
+             xlab = "Sexual Functioning (MSFI)", ylab = "Mean Oxytocin in pg/ml") + 
+  stat_cor(aes(color = group), method = "spearman", 
+           label.x = Inf, label.y = c(Inf, Inf), 
+           hjust = 1.1, vjust = c(2, 4)) + 
+  scale_fill_manual(values = c("#868686FF", "#f19c8c")) +
+  scale_color_manual(values = c("#868686FF", "#f19c8c")) +
+  scale_shape_manual(values = c(17, 17)) +  # Use triangles (17) for all points  
+  ggtitle("Males")   
+
+grid.arrange(plot_female, plot_male, ncol = 2)
+
+	
+	##### repeat for subscales that were sig different across groups:
+cor.test(df_female$fsfi_orgasm, df_female$Oxytocin, method = "pearson") # no corr
+cor.test(df_female$fsfi_desire, df_female$Oxytocin, method = "pearson") # no corr
+cor.test(df_female$fsfi_lubri, df_female$Oxytocin, method = "pearson") # no corr
+
+	
+	df_female <- df_female %>%
+  mutate(fsfi_difference = fsfi_orgasm + fsfi_desire +fsfi_lubri)# create a sum scor of the three subscale that were diff across groups
+	
+	df_plot <- df_female %>%
+  mutate(
+    group = factor(group, levels = c("0", "1"), labels = c("HC", "FND"))  )
+
+plot_female <- ggscatter(df_plot, x = "fsfi_difference", y = "Oxytocin",fill = "group", color = "group",
+             add = "reg.line", conf.int = TRUE, 
+             cor.coef = FALSE, cor.method = "spearman",
+             xlab = "Desire + Lubrication + Orgasm (FSFI)", ylab = "Mean Oxytocin in pg/ml") + 
+  stat_cor(aes(color = group), method = "spearman", 
+           label.x = Inf, label.y = c(Inf, Inf), 
+           hjust = 1.1, vjust = c(2, 4)) + 
+  scale_fill_manual(values = c("#868686FF", "#f19c8c")) +
+  scale_color_manual(values = c("#868686FF", "#f19c8c")) +
+  ggtitle("Difference in FSFI Subscales and Oxytocin")   
+plot_female
+```
+
+# 6) Interoception
+
+```{r}
+#| warning: FALSE
+#| error: FALSE
+
+perform_correlation_tests <- function(variable, df) {
+  tests <- list(
+    IAS = cor.test(df[[variable]], df$ias, method = "spearman"),
+    MAIA = cor.test(df[[variable]], df$maia_total, method = "spearman"),
+    RRST = cor.test(df[[variable]], df$rrst_sensitivity, method = "spearman"),
+    HBT = cor.test(df[[variable]], df$hbt_accuracy_mean, method = "spearman")
+  )
+  
+  # Extract p-values and correlation coefficients (r)
+  p_values <- sapply(tests, function(x) x$p.value) # Extract pvalue
+  r_values <- sapply(tests, function(x) x$estimate)  # Extract correlation coefficient (r)
+  p_adjusted <- p.adjust(p_values, method = "fdr")  # Adjust p-values
+  
+  # Store results in a dataframe
+  results <- data.frame(
+    Comparison = paste(variable, names(p_values), sep = "_"),
+    Correlation_Coefficient_r = r_values,
+    Raw_p_value = p_values,
+    Adjusted_p_value = p_adjusted
+  )
+  
+  print(results)  # Display results in console
+  return(results)  # Return the dataframe
+}
+
+results <- perform_correlation_tests("Oxytocin", df)
+
+#### IAS is significant; test for different timepoints
+variables <- c("Oxytocin_waking", "Oxytocin_lunch", "Oxytocin_pretask", "Oxytocin_posttask")
+
+cor_IAS <- lapply(variables, function(var) {
+  test <- cor.test(df$ias, df[[var]], method = "spearman")
+  tibble(variable = var,
+    correlation = test$estimate,
+    p_value = test$p.value)
+}) %>%
+  bind_rows()
+
+# Apply FDR correction
+cor_IAS <- cor_IAS %>%
+  mutate(p_adjusted = p.adjust(p_value, method = "fdr"))
+print(cor_IAS)
+
+
+##### ALSO: REPEAT CORR OF IAS SEPARATE PER GROUP
+cor.test(df_HC$Oxytocin, df_HC$ias, method = "spearman") # not sig
+cor.test(df_FND$Oxytocin, df_FND$ias, method = "spearman") # not sig
+
+
+#### subscales of MAIA tested separately
+perform_correlation_tests <- function(variable, df) {
+  tests <- list(
+    Noticing = cor.test(df[[variable]], df$maia_note, method = "spearman"),
+    NotDistracting = cor.test(df[[variable]], df$maia_distr, method = "spearman"),
+    NotWorrying = cor.test(df[[variable]], df$maia_worry, method = "spearman"),
+    AttentionRegulation = cor.test(df[[variable]], df$maia_attreg, method = "spearman"),
+    Awareness = cor.test(df[[variable]], df$maia_aware, method = "spearman"),
+    SelfRegulation = cor.test(df[[variable]], df$maia_sfreg, method = "spearman"),
+    BodyListening = cor.test(df[[variable]], df$maia_body, method = "spearman"),
+    Trusting = cor.test(df[[variable]], df$maia_trust, method = "spearman") )
+  
+  # Extract p-values and correlation coefficients (r)
+  p_values <- sapply(tests, function(x) x$p.value) # Extract pvalue
+  r_values <- sapply(tests, function(x) x$estimate)  # Extract correlation coefficient (r)
+  p_adjusted <- p.adjust(p_values, method = "fdr")  # Adjust p-values
+  
+  # Store results in a dataframe
+  results <- data.frame(
+    Comparison = paste(variable, names(p_values), sep = "_"),
+    Correlation_Coefficient_r = r_values,
+    Raw_p_value = p_values,
+    Adjusted_p_value = p_adjusted
+  )
+  
+  print(results)  # Display results in console
+  return(results)  # Return the dataframe
+}
+
+results <- perform_correlation_tests("Oxytocin", df)
+          
+```
+
+Visualization (Scatterplot IAS - Oxytocin)
+
+```{r}
+df_plot <- df %>%
+  mutate(
+    group = factor(group, levels = c("0", "1"), labels = c("HC", "FND")),
+    sex = factor(sex, levels = c("1", "2"), labels = c("female", "male"))
+  )
+
+ggplot(df_plot, aes(x = ias, y = Oxytocin, color = group, shape = sex)) +
+  geom_point(size = 3) +  # Adjust point size
+  geom_smooth(method = "lm", se = FALSE, aes(group = group), linewidth = 1) +  # Add regression lines for group
+  scale_color_manual(values = c("#868686FF", "#f19c8c")) +  # group: HC → black, FND → red
+  scale_shape_manual(values = c(16, 17)) +  # sex: female → circle, male → triangle
+  labs(x = "Interoceptive Accuracy Score (IAS)", 
+       y = "Mean Oxytocin in pg/ml", 
+       color = "Group", 
+       shape = "Sex") +
+  theme_minimal() +  
+  theme(panel.grid.major = element_blank(),   # Remove major grid lines
+        panel.grid.minor = element_blank())   # Remove minor grid lines
+
+
+ggscatter(df_plot, x = "ias", y = "Oxytocin",fill = "group", color = "group",
+             add = "reg.line", conf.int = TRUE, 
+             cor.coef = FALSE, cor.method = "pearson",
+             xlab = "Interoceptive Sensibility (IAS)", ylab = "Mean Oxytocin in pg/ml") + 
+  stat_cor(aes(color = group), method = "pearson", 
+           label.x = Inf, label.y = c(Inf, Inf), 
+           hjust = 1.1, vjust = c(2, 4)) + 
+  scale_fill_manual(values = c("#868686FF", "#f19c8c")) +
+  scale_color_manual(values = c("#868686FF", "#f19c8c")) +
+  ggtitle("Interoception and Oxytocin")   
+
+```
+
+# 7) Sexual Functioning
+
+```{r}
+#| warning: FALSE
+#| error: FALSE
+
+# overall linear regression
+OXTlm <- lm(formula = Oxytocin ~ group*sex_func, data = df) 
+summary(OXTlm)
+
+# correlation analysis (overall sample)
+cor.test(df$sex_func, df$Oxytocin, method = "spearman") # no corr
+
+# correlation analysis (separate per group)
+cor.test(df_FND$sex_func, df_FND$Oxytocin, method = "spearman") # no corr
+cor.test(df_HC$sex_func, df_HC$Oxytocin, method = "spearman") #  no corr
+
+```
+
+## 7.1) Females
+
+```{r}
+#| warning: FALSE
+#| error: FALSE
+# separate LM per sex
+OXTlm <- lm(formula = Oxytocin ~ group*fsfi_total, data = df_female) 
+summary(OXTlm)
+
+
+#### FSFI/MSFI subscores separate per gender
+fsfi<-dplyr::select(df_female, pcode, group, fsfi_desire, fsfi_arousal, fsfi_lubri, fsfi_orgasm, fsfi_satis, fsfi_pain)
+
+#Make long data
+  fsfi_long <- gather(fsfi, key = "subscale", value = "score", -pcode, -group) # make data set long (so that every p code has 6 rows, one for each of the subscores of ctq)
+  fsfi_long$subscale<-as.factor(fsfi_long$subscale)
+  fsfi_long$subscale <- factor(fsfi_long$subscale, levels = rev(levels(fsfi_long$subscale)))
+  
+  fsfi_long$score<-as.numeric(fsfi_long$score)
+  fsfi_long$group<-as.factor(fsfi_long$group)
+  fsfi_long$group <- factor(fsfi_long$group, levels = c(0, 1), labels = c("HC", "FND")) # only run if not ran before
+  
+  
+  # Calculate mean, median, CI, SE
+  library(dplyr)
+  alpha=0.05
+  fsfi.summary <- fsfi_long %>%
+    group_by(group,subscale)%>%
+    dplyr::summarise(
+      se = sd(score) / sqrt(length(score)),
+      t=qt((1-alpha)/2 + .5, length(score)-1),   # tend to 1.96 if sample size is big enough
+      CI=t*se, 
+      score = mean(score), .groups = 'drop') # you can use here mean or median depending on data distribution
+  
+  fsfi.summary # according to this order name the lables in the following plot p
+  
+  # STATISTICS
+  # Multiple t-tests using FDR correction for multiple comparisons (FDR or bonferroni)
+  library(rstatix)
+  stat.test <- fsfi_long %>%
+    group_by(subscale) %>%
+    wilcox_test(score ~ group) %>%
+    adjust_pvalue(method = "fdr") %>% # if you don't want to correct for multiple comparisons you can comment out this line
+    add_significance()
+  stat.test # orgasm, lubrication and desire as sig difference between groups
+  
+ 
+  # Filter for significant results
+  significant_results <- stat.test %>%
+    filter(p.adj.signif == "*") %>%
+    pull(subscale)  # Extract the names of the significant subscales
+  
+  
+  # VISUALIZATION
+  # Plot
+  fsfi.summary <- fsfi.summary %>%
+    mutate(significance = ifelse(subscale %in% significant_results, "*", ""))  # Add a column for asterisks
+  
+  dodge <- position_dodge(width=0.9)
+  fsfiplot <- fsfi.summary %>%
+    ggplot(aes(y = score, x = subscale, ymin = score - CI, ymax = score + CI, fill = group)) +
+    geom_bar(position = position_dodge(), stat = "identity") +
+    geom_errorbar(position = dodge, width = 0.3) +
+    labs(x = "FSFI Subscales", y = "Scores") +
+    scale_fill_manual(values = c("#868686FF", "#BB4038")) +
+    ggtitle("FSFI - Feale Sexual Functioning Index (N=62)") +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    theme_classic(base_size = 9) +
+    theme(axis.title.x = element_blank(),
+          axis.text.y = element_text(size = 12, face = "bold"),
+          axis.text.x = element_text(angle = 45, hjust = 1, size = 12, face = "bold"),
+          legend.title = element_text(size = 12, face = "bold"),
+          legend.text = element_text(size = 12),
+          plot.title = element_text(hjust = 0.5)) +
+    scale_x_discrete(labels = c("Satisfaction", "Pain", "Orgasm", "Lubrication", "Desire", "Arousal")) +
+    guides(fill = guide_legend(title = "Groups")) +
+    geom_text(aes(label = significance), # define position
+              position = position_dodge(width = 0.9), 
+              vjust = -0.5, size = 5, color = "black")  # Add significance asterisks above bars
+
+  
+##### correlation of OXT for identified subscales
+  
+  cor.test(df$fsfi_orgasm, df$Oxytocin, method = "spearman") # no corr
+  cor.test(df$fsfi_lubri, df$Oxytocin, method = "spearman") # no corr
+  cor.test(df$fsfi_desire, df$Oxytocin, method = "spearman") # no corr
+```
+
+## 7.2) Males
+
+```{r}
+#| warning: FALSE
+#| error: FALSE
+## separate LM for males
+OXTlm <- lm(formula = Oxytocin ~ group*msfi_total, data = df_male) 
+summary(OXTlm)
+
+
+  msfi<-dplyr::select(df_male, pcode, group, msfi_arousal, msfi_desire, msfi_errect, msfi_orgasm, msfi_satis)
+  msfi<-na.omit(msfi)
+  #Make long data
+  msfi_long <- gather(msfi, key = "subscale", value = "score", -pcode, -group) # make data set long (so that every p code has 6 rows, one for each of the subscores of ctq)
+  msfi_long$subscale<-as.factor(msfi_long$subscale)
+  msfi_long$subscale <- factor(msfi_long$subscale, levels = rev(levels(msfi_long$subscale)))
+  
+  msfi_long$score<-as.numeric(msfi_long$score)
+  msfi_long$group<-as.factor(msfi_long$group)
+  msfi_long$group <- factor(msfi_long$group, levels = c(0, 1), labels = c("HC", "FND"))
+  
+  
+  # Calculate mean, median, CI, SE
+  library(dplyr)
+  alpha=0.05
+  msfi.summary <- msfi_long %>%
+    group_by(group,subscale)%>%
+    dplyr::summarise(
+      se = sd(score) / sqrt(length(score)),
+      t=qt((1-alpha)/2 + .5, length(score)-1),   # tend to 1.96 if sample size is big enough
+      CI=t*se, 
+      score = mean(score), .groups = 'drop') # you can use here mean or median depending on data distribution
+  
+  msfi.summary # according to this order name the lables in the following plot p
+  
+  # STATISTICS
+  # Multiple t-tests using FDR correction for multiple comparisons (FDR or bonferroni)
+  library(rstatix)
+  stat.test <- msfi_long %>%
+    group_by(subscale) %>%
+    wilcox_test(score ~ group) %>%
+    adjust_pvalue(method = "fdr") %>% # if you don't want to correct for multiple comparisons you can comment out this line
+    add_significance()
+  stat.test # no subscale is sig different between groups
+  
+  # Filter for significant results
+  significant_results <- stat.test %>%
+    filter(p.adj.signif == "*") %>%
+    pull(subscale)  # Extract the names of the significant subscales
+  
+  
+  # VISUALIZATION
+  # Plot
+  msfi.summary <- msfi.summary %>%
+    mutate(significance = ifelse(subscale %in% significant_results, "*", ""))  # Add a column for asterisks
+  
+  msfiplot <- msfi.summary %>%
+    ggplot(aes(y = score, x = subscale, ymin = score - CI, ymax = score + CI, fill = group)) +
+    geom_bar(position = position_dodge(), stat = "identity") +
+    geom_errorbar(position = dodge, width = 0.3) +
+    labs(x = "MSFI Subscales", y = "Scores") +
+    scale_fill_manual(values = c("#868686FF", "#BB4038")) +
+    ggtitle("MSFI - Male Sexual Functioning Index (N=25)") +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    theme_classic(base_size = 9) +
+    theme(axis.title.x = element_blank(),
+          axis.text.y = element_text(size = 12, face = "bold"),
+          axis.text.x = element_text(angle = 45, hjust = 1, size = 12, face = "bold"),
+          legend.title = element_text(size = 12, face = "bold"),
+          legend.text = element_text(size = 12),
+          plot.title = element_text(hjust = 0.5)) +
+    scale_x_discrete(labels = c("Satisfaction", "Orgasm", "Erection", "Desire", "Arousal")) +
+    guides(fill = guide_legend(title = "Groups")) +
+    geom_text(aes(label = significance), 
+              position = position_dodge(width = 0.9), 
+              vjust = -0.5, size = 5, color = "black")  # Add significance asterisks above bars
+
+
+	grid.arrange(fsfiplot, msfiplot)
+	
+
+#| warning: FALSE
+#| error: FALSE
+perform_correlation_tests <- function(variable, df) {
+  tests <- list(
+    CGI = cor.test(df[[variable]], df$cgi, method = "pearson"),
+    SFMDRS = cor.test(df[[variable]], df$sfmdrs, method = "pearson"),
+    SDQ = cor.test(df[[variable]], df$sdq, method = "pearson"),
+    ANX_DEP = cor.test(df[[variable]], df$anx_dep_SUM, method = "pearson")
+  )
+  
+  # Extract p-values and correlation coefficients (r)
+  p_values <- sapply(tests, function(x) x$p.value) # Extract pvalue
+  r_values <- sapply(tests, function(x) x$estimate)  # Extract correlation coefficient (r)
+  p_adjusted <- p.adjust(p_values, method = "fdr")  # Adjust p-values
+  
+  # Store results in a dataframe
+  results <- data.frame(
+    Comparison = paste(variable, names(p_values), sep = "_"),
+    Correlation_Coefficient_r = r_values,
+    Raw_p_value = p_values,
+    Adjusted_p_value = p_adjusted
+  )
+  
+  print(results)  # Display results in console
+  return(results)  # Return the dataframe
+}
+
+results <- perform_correlation_tests("Oxytocin", df_FND)
+
+#
+df_sfmdrs <- df_FND %>%
+  filter(!diagnosis %in% c(1, 4, 6, 7)) # those with diagnosis PNSES (44.5), sensory FND (44.6), PPPD or cognitive FND only are excluded 
+cor.test(df_sfmdrs$sfmdrs, df_sfmdrs$Oxytocin, method = "pearson") # not sig
+
+```
+
+# 8) Mediation Analysis
+
+here, we use again average Oxytocin values (average across 4 time points) and only run the mediation analysis in FND
+
+```{r}
+#| warning: FALSE
+#| error: FALSE
+# Load required packages
+library(mediation)
+
+#### RISK FACTOR MODELLING with outcome variable of IAS (which is different across groups, and correlated with to the OXT)
+
+#### childhood trauma
+# Step 1: Fit mediator model (IAS ~ ctq_total)
+mediator_model <- lm(ias ~ ctq_total, data = df_FND)
+# Step 2: Fit outcome model (Oxytocin ~ ctq_total + ias)
+outcome_model <- lm(Oxytocin ~ ctq_total + ias, data = df_FND)
+# Step 3: Mediation analysis for ctq_total --> IAS --> Oxytocin
+med_result <- mediate(mediator_model, outcome_model, treat = "ctq_total", mediator = "ias", boot = TRUE, sims = 5000)
+# Print mediation summary
+summary(med_result) # no sig
+
+#### insec attachement
+# Step 1: Fit mediator model (IAS ~ insec_attach)
+mediator_model <- lm(ias ~ insec_attach, data = df_FND)
+# Step 2: Fit outcome model (Oxytocin ~ insec_attach + ias)
+outcome_model <- lm(Oxytocin ~ insec_attach + ias, data = df_FND)
+# Step 3: Mediation analysis for insec_attach --> lower interoception (IAS) --> Oxytocin
+med_result <- mediate(mediator_model, outcome_model, treat = "insec_attach", mediator = "ias", boot = TRUE, sims = 5000)
+# Print mediation summary
+summary(med_result) #
+
+
+#### Anxiety
+# Step 1: Fit mediator model (stai_t ~ insec_attach)
+mediator_model <- lm(stai_t ~ insec_attach, data = df_FND)
+# Step 2: Fit outcome model (Oxytocin ~ insec_attach + stai_t)
+outcome_model <- lm(Oxytocin ~ insec_attach + stai_t, data = df_FND)
+# Step 3: Mediation analysis for insec_attach --> Anxiety (trait) --> Oxytocin
+med_result <- mediate(mediator_model, outcome_model, treat = "insec_attach", mediator = "stai_t", boot = TRUE, sims = 5000)
+# Print mediation summary
+summary(med_result) #
+
+```

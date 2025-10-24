@@ -1,0 +1,7 @@
+trauma_type	.y.	group1	group2	n1	n2	statistic	p	p.adj	p.adj.signif
+ctq_sexab	score	HC	FND	45	42	730.5	0.0474	0.0711	ns
+ctq_physneg	score	HC	FND	45	42	810.5	0.245	0.294	ns
+ctq_physab	score	HC	FND	45	42	649	0.0061	0.0366	*
+ctq_minim	score	HC	FND	45	42	876	0.429	0.429	ns
+ctq_emoneg	score	HC	FND	45	42	707.5	0.0434	0.0711	ns
+ctq_emoab	score	HC	FND	45	42	695	0.0329	0.0711	ns
