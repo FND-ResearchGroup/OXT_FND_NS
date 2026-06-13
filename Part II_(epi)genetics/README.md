@@ -1,15 +1,17 @@
 # OXYTOCIN in FND
 
- date: 		10 March 2026
+ date: 		13 June 2026
  author: 	Natascha Stoffel, natascha.stoffel@unibe.ch
  
-This git hub repository entails the markdown and output for the manuscript that is currently under review in the Journal of Neurobiology of Stress entitled “The Oxytocinergic System in Functional Neurological Disorder: Testing Associations with Interoception and Childhood Trauma"
+This git hub repository entails the markdown and output for the manuscript that is currently under review in the Journal of Comprehensive Neuroendocrinology entitled “The Oxytocinergic System in Functional Neurological Disorder: Preliminary Testing of Associations with Interoception and Childhood Trauma"
 
 	
 -  R analysis markdown :  R script (html file)
 -  output : output generated via R-script
 
-PLEASE NOTE that the raw (genetic) data is available for N=79 participants who consented for the continuous use of their data for further research. However, instead of making them publicly available, requests can be granted by contacting the responsible author, who will give you access to the private repository on GitHub. For that, please contact: https://github.com/nstoff via natascha.stoffel@unibe.ch 
+PLEASE NOTE that the raw (genetic) data is available for N=79 participants who consented for the continuous use of their data for further research. 
+However, instead of making them publicly available, requests can be granted by contacting the responsible author, who will give you access to the private repository on GitHub. 
+For that, please contact: https://github.com/nstoff, e-mail: natascha.stoffel@unibe.ch 
 
 The data contains the allelic distribution of the following ten SNPs:
 
