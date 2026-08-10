@@ -3,7 +3,7 @@
  date: 		13 June 2026
  author: 	Natascha Stoffel, natascha.stoffel@unibe.ch
  
-This git hub repository entails the markdown and output for the manuscript that is currently under review in the Journal of Comprehensive Neuroendocrinology entitled “The Oxytocinergic System in Functional Neurological Disorder: Preliminary Testing of Associations with Interoception and Childhood Trauma"
+This git hub repository entails the markdown and output for the manuscript published in the Journal of Comprehensive Neuroendocrinology entitled “The Oxytocinergic System in Functional Neurological Disorder: Preliminary Testing of Associations with Interoception and Childhood Trauma" https://doi.org/10.1016/j.cpnec.2026.100376 
 
 	
 -  R analysis markdown :  R script (html file)
